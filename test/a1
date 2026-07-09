@@ -1,0 +1,89 @@
+import os
+import sys
+import time
+from urllib.parse import urljoin, unquote
+import requests
+from bs4 import BeautifulSoup
+import urllib3
+
+# Suppress SSL warnings if the directory certificate acts up
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Target URL (The root of the open directory)
+BASE_URL = "https://a.111477.xyz/"
+
+# Target extensions to scan
+VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi')
+
+# Headers to mimic a browser request
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
+
+def is_video_file(url):
+    """Checks if a URL points to a target video format."""
+    return url.lower().endswith(VIDEO_EXTENSIONS)
+
+def is_directory(url, text):
+    """Identifies if a link is a subfolder, dodging parent directories and sorting links."""
+    if text.strip() in ["Parent Directory", "../", "Name", "Last modified", "Size", "Description"]:
+        return False
+    return url.endswith('/')
+
+def crawl_directory(current_url, playlist_file):
+    """Recursively crawls directories and appends found media to the M3U file."""
+    print(f"Scanning folder: {current_url}")
+    try:
+        # Request with a timeout to avoid hanging on slow responses
+        response = requests.get(current_url, headers=HEADERS, verify=False, timeout=15)
+        if response.status_code != 200:
+            return
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Open directories typically store paths inside 'a' anchor tags
+        for link in soup.find_all('a'):
+            href = link.get('href')
+            if not href:
+                continue
+            
+            # Resolve relative URLs to absolute URLs
+            absolute_url = urljoin(current_url, href)
+            link_text = link.get_text()
+
+            # Process files
+            if is_video_file(absolute_url):
+                # Clean up file name for display in the playlist
+                clean_title = unquote(os.path.basename(absolute_url))
+                
+                # Write standard M3U protocol blocks
+                playlist_file.write(f"#EXTINF:-1, {clean_title}\n")
+                playlist_file.write(f"{absolute_url}\n")
+                print(f" Found video: {clean_title}")
+                
+            # Process sub-directories recursively 
+            elif is_directory(absolute_url, link_text):
+                # Avoid infinite loop backtracks
+                if absolute_url.startswith(BASE_URL) and absolute_url != current_url:
+                    crawl_directory(absolute_url, playlist_file)
+                    # Politeness sleep interval to prevent getting rate-limited or banned
+                    time.sleep(0.5)
+
+    except Exception as e:
+        print(f"Error reading {current_url}: {e}", file=sys.stderr)
+
+def main():
+    output_filename = "playlist.m3u"
+    
+    print(f"Starting crawl on {BASE_URL}...")
+    with open(output_filename, "w", encoding="utf-8") as playlist:
+        # Initialize standard M3U header
+        playlist.write("#EXTM3U\n\n")
+        
+        # Run recursive scraper
+        crawl_directory(BASE_URL, playlist)
+        
+    print(f"\n Scraping complete! Your playlist has been saved to: {os.path.abspath(output_filename)}")
+
+if __name__ == "__main__":
+    main()
